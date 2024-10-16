@@ -1,204 +1,151 @@
-from ctypes.wintypes import tagMSG
-from locale import T_FMT_AMPM
 import streamlit as st
 import numpy as np
 import pandas as pd
 import warnings
 import riskfolio as rp
-import investpy as ivp
 import matplotlib.pyplot as plt
-from IPython.display import display
 from datetime import datetime
+import locale
 
-st.set_page_config(page_title = "Danh mục HRP", layout = "wide")
+# Set locale to US for AM/PM format
+locale.setlocale(locale.LC_TIME, "en_US")
+
+# Streamlit page configuration
+st.set_page_config(page_title="Danh mục HRP", layout="wide")
 st.header("Danh mục đầu tư theo mô hình Hierarchical Risk Parity")
-st.markdown('Trong phần này, tôi sẽ tính toán danh mục đầu tư với rủi ro phân bổ ngang bằng giữa các tài sản trong danh mục (Gambeta và Kwon 2020) bằng cách sử dụng các phiên bản A, B và C của mô hình Relaxed Risk Parity và so sánh tỉ trọng giải ngân với mô hình của Markowitz 1952, lý thuyết danh mục đầu tư hiện đại. RRP là một mô hình cho phép kết hợp điều chỉnh tham số trong mô hình Vanilla Risk Parity.')
-col1, col2 = st.columns(2)
-with col1:
-    start_date = st.date_input("Ngày bắt đầu",datetime(2013, 1, 1))
-with col2:
-    end_date = st.date_input("Ngày kết thúc") # it defaults to current date
-try: 
-    tickers_string = st.text_input('Nhập mã chứng khoán cách nhau bởi dấu phẩy không khoảng trắng, vd: "REE,PHR,FMC"', 'REE,PHR,FMC').upper()
-    tickers = tickers_string.split(',')
-except:
-    st.write('Enter correct stock tickers to be included in portfolio separated by commas WITHOUT spaces, e.g. "REE,PHR,FMC"and hit Enter.')
+st.markdown(
+    "Trong phần này, tôi sẽ tính toán danh mục đầu tư với rủi ro phân bổ ngang bằng giữa các tài sản trong danh mục (Gambeta và Kwon 2020) bằng cách sử dụng các phiên bản A, B và C của mô hình Relaxed Risk Parity và so sánh tỉ trọng giải ngân với mô hình của Markowitz 1952, lý thuyết danh mục đầu tư hiện đại. RRP là một mô hình cho phép kết hợp điều chỉnh tham số trong mô hình Vanilla Risk Parity."
+)
 
-country_of_choice = "vietnam"
-data_frequency = "Daily"
+# Create a file uploader to allow the user to upload a CSV file
+uploaded_file = st.file_uploader("Upload your CSV file", type=["csv"])
 
-# initializing the final dataframe
-stocks_df = pd.DataFrame()
+# Check if a file has been uploaded
+if uploaded_file is not None:
+    # Read the uploaded CSV file
+    df = pd.read_csv(uploaded_file)
 
-# looping through each entries in our stock list to get data
-for i in range(len(tickers)):
-    
-    # making calls using investpy api to get historical data
-    current_stock_df = ivp.stocks.get_stock_historical_data(stock = tickers[i], country = country_of_choice, from_date = start_date.strftime('%d/%m/%Y'), to_date = end_date.strftime('%d/%m/%Y'), as_json = False, order = 'ascending', interval = data_frequency)
-    
-    # setting data with close prices
-    stocks_df[tickers[i]] = current_stock_df["Close"]
-    
-# dropping the rows if any of the columns has nan value
-data = stocks_df.dropna()
-Y = data.pct_change().dropna()
-# Building the portfolio object
-port = rp.Portfolio(returns=Y)
+    # Convert 'Date' column to datetime and set as index
+    df["Date"] = pd.to_datetime(df["Date"], format="%Y%m%d")
+    df.set_index("Date", inplace=True)
 
-# Calculating optimal portfolio
+    # Ensure all columns are numeric
+    df = df.apply(pd.to_numeric, errors="coerce")
 
-# Select method and estimate input parameters:
+    # Calculate returns
+    Y = df.pct_change().dropna()
 
-method_mu='hist' # Method to estimate expected returns based on historical data.
-method_cov='hist' # Method to estimate covariance matrix based on historical data.
+    # Building the portfolio object
+    port = rp.Portfolio(returns=Y)
 
-port.assets_stats(method_mu=method_mu, method_cov=method_cov, d=0.94)
+    # Calculating optimal portfolio
+    method_mu = "hist"  # Method to estimate expected returns based on historical data
+    method_cov = "hist"  # Method to estimate covariance matrix based on historical data
+    port.assets_stats(method_mu=method_mu, method_cov=method_cov, d=0.94)
 
-# Estimate optimal portfolio:
+    # Estimate optimal portfolio - Vanilla Risk Parity
+    model = "Classic"
+    rm = "MV"  # Risk measure used: variance
+    rf = 0  # Risk-free rate
+    b = None
+    hist = True
 
-model = 'Classic' # Could be Classic (historical) or FM (Factor Model)
-rm = 'MV' # Risk measure used, this time will be variance
-obj = 'Sharpe' # Objective function, could be MinRisk, MaxRet, Utility or Sharpe
-hist = True # Use historical scenarios for risk measures that depend on scenarios
-rf = 0 # Risk free rate
-b = None # Risk contribution constraints vector
+    w_rp = port.rp_optimization(model=model, rm=rm, rf=rf, b=b, hist=hist)
+    st.header("Tỉ trọng phân bổ theo mô hình Vanilla")
+    st.dataframe(w_rp.T)
 
-w_rp = port.rp_optimization(model=model, rm=rm, rf=rf, b=b, hist=hist)
-st.header('Tỉ trọng phân bổ theo mô hình Vanilla')
-st.dataframe(w_rp.T)
+    # Plotting pie chart of allocations
+    ax_pie = rp.plot_pie(
+        w=w_rp,
+        title="Risk Parity Variance",
+        others=0.05,
+        nrow=25,
+        cmap="tab20",
+        height=6,
+        width=10,
+    )
+    st.pyplot(ax_pie.figure)
 
-ax = rp.plot_pie(w=w_rp, title='Risk Parity Variance', others=0.05, nrow=25, cmap = "tab20",
-                 height=6, width=10, ax=None)
+    # Plot risk contributions
+    fig_risk_con, ax_risk_con = plt.subplots(figsize=(10, 6))
+    ax_risk_con = rp.plot_risk_con(
+        w_rp,
+        cov=port.cov,
+        returns=port.returns,
+        rm=rm,
+        rf=rf,
+        alpha=0.01,
+        color="tab:blue",
+        height=6,
+        width=10,
+        ax=ax_risk_con,
+    )
+    st.pyplot(fig=fig_risk_con)
 
-fig= ax.figure
-st.pyplot(fig)
+    # Plot portfolio table
+    fig_table, ax_table = plt.subplots(figsize=(10, 6))
+    ax_table = rp.plot_table(returns=Y, w=w_rp, MAR=0, alpha=0.05, ax=None)
+    st.pyplot(fig=fig_table)
 
-fig, ax = plt.subplots(figsize=(10,6))
-ax1 = rp.plot_risk_con(w_rp, cov=port.cov, returns=port.returns, rm=rm, rf=0, alpha=0.01,
-                      color="tab:blue", height=6, width=10, ax=ax)
+    # Plot histogram of returns
+    fig_hist, ax_hist = plt.subplots(figsize=(10, 6))
+    ax_hist = rp.plot_hist(returns=Y, w=w_rp, alpha=0.05, bins=50, height=6, width=10)
+    st.pyplot(fig=fig_hist)
 
-fig1= ax1.figure
-st.pyplot(fig=fig)
+    # Plot series returns
+    fig_series, ax_series = plt.subplots(figsize=(10, 6))
+    ax_series = rp.plot_series(returns=Y, w=w_rp, cmap="tab20", height=6, width=10)
+    st.pyplot(fig=fig_series)
 
-fig, tamdeptrai = plt.subplots(figsize=(10,6))
-tamdeptrai = rp.plot_table(returns=Y, w=w_rp, MAR=0, alpha=0.05, ax=None)
-fig2 = tamdeptrai.figure
-st.pyplot(fig2)
+    # Model A - Relaxed Risk Parity Optimization
+    version = "A"
+    port.lowerret = 0.00056488 * 1.5
+    w_rrp_a = port.rrp_optimization(model=model, version=version, l=1, b=b, hist=hist)
+    st.header("Model A")
+    st.dataframe(w_rrp_a.T)
 
+    # Model B
+    version = "B"
+    w_rrp_b = port.rrp_optimization(model=model, version=version, l=1, b=b, hist=hist)
+    st.header("Model B")
+    st.dataframe(w_rrp_b.T)
 
+    # Model C
+    version = "C"
+    w_rrp_c = port.rrp_optimization(model=model, version=version, l=1, b=b, hist=hist)
+    st.header("Model C")
+    st.dataframe(w_rrp_c.T)
 
-fig, ax = plt.subplots(figsize=(10,6))
-ax = rp.plot_hist(returns=Y, w=w_rp, alpha=0.05, bins=50, height=6,
-                  width=10, ax=None)
+    # Markowitz Optimization - MPT
+    port.assets_stats(method_mu=method_mu, method_cov=method_cov, d=0.94)
+    w_mpt = port.optimization(model=model, rm=rm, obj="Sharpe", rf=rf, l=0, hist=hist)
+    st.header("Tỉ trọng giải ngân theo mô hình lý thuyết MPT cổ điển")
+    st.dataframe(w_mpt.T)
 
-st.pyplot(fig=fig)
+    # Plot efficient frontier
+    ws = port.efficient_frontier(model="Classic", rm=rm, points=20, rf=0, hist=True)
+    label = "Max Risk Adjusted Return Portfolio"
+    fig_frontier, ax_frontier = plt.subplots(figsize=(10, 6))
+    ax_frontier = rp.plot_frontier(
+        w_frontier=ws,
+        mu=port.mu,
+        cov=port.cov,
+        returns=port.returns,
+        rm=rm,
+        rf=0,
+        alpha=0.05,
+        cmap="viridis",
+        w=w_mpt,
+        label=label,
+        marker="*",
+        s=16,
+        c="r",
+        height=6,
+        width=10,
+        t_factor=252,
+        ax=ax_frontier,
+    )
+    st.pyplot(fig=fig_frontier)
 
-fig, ax = plt.subplots(figsize=(10,6))
-ax = rp.plot_series(returns=Y, w=w_rp, cmap='tab20', height=6, width=10,
-                    ax=None)
-
-st.pyplot(fig=fig)
-st.header('Model A')
-# Building the portfolio object
-port = rp.Portfolio(returns=Y)
-
-# Calculating optimal portfolio
-
-# Select method and estimate input parameters:
-
-method_mu='hist' # Method to estimate expected returns based on historical data.
-method_cov='hist' # Method to estimate covariance matrix based on historical data.
-
-port.assets_stats(method_mu=method_mu, method_cov=method_cov, d=0.94)
-
-# Estimate optimal portfolio:
-
-model = 'Classic' # Could be Classic (historical) or FM (Factor Model)
-rm = 'MV' # Risk measure used, this time will be variance
-obj = 'Sharpe' # Objective function, could be MinRisk, MaxRet, Utility or Sharpe
-hist = True # Use historical scenarios for risk measures that depend on scenarios
-rf = 0 # Risk free rate
-b = None # Risk contribution constraints vector
-version = 'A' # Could be A, B or C
-l = 1 # Penalty term, only valid for C version
-
-# Setting the return constraint
-port.lowerret = 0.00056488 * 1.5
-
-w_rrp_a = port.rrp_optimization(model=model, version=version, l=l, b=b, hist=hist)
-
-st.dataframe(w_rrp_a.T)
-
-st.header('Model B')
-
-# Building the portfolio object
-port = rp.Portfolio(returns=Y)
-
-# Calculating optimal portfolio
-
-# Select method and estimate input parameters:
-
-method_mu='hist' # Method to estimate expected returns based on historical data.
-method_cov='hist' # Method to estimate covariance matrix based on historical data.
-
-port.assets_stats(method_mu=method_mu, method_cov=method_cov, d=0.94)
-
-# Estimate optimal portfolio:
-
-model = 'Classic' # Could be Classic (historical) or FM (Factor Model)
-rm = 'MV' # Risk measure used, this time will be variance
-obj = 'Sharpe' # Objective function, could be MinRisk, MaxRet, Utility or Sharpe
-hist = True # Use historical scenarios for risk measures that depend on scenarios
-rf = 0 # Risk free rate
-version = 'B' # Could be A, B or C
-
-w_rrp_b = port.rrp_optimization(model=model, version=version, l=l, b=b, hist=hist)
-
-st.dataframe(w_rrp_b.T)
-
-st.header('Model C')
-
-version = 'C' # Could be A, B or C
-
-w_rrp_c = port.rrp_optimization(model=model, version=version, l=l, b=b, hist=hist)
-
-st.dataframe(w_rrp_c.T)
-
-
-
-# Building the portfolio object
-port = rp.Portfolio(returns=Y)
-
-# Calculating optimal portfolio
-
-# Select method and estimate input parameters:
-
-method_mu='hist' # Method to estimate expected returns based on historical data.
-method_cov='hist' # Method to estimate covariance matrix based on historical data.
-
-port.assets_stats(method_mu=method_mu, method_cov=method_cov, d=0.94)
-
-# Estimate optimal portfolio:
-
-model='Classic' # Could be Classic (historical), BL (Black Litterman) or FM (Factor Model)
-rm = 'MV' # Risk measure used, this time will be variance
-obj = 'Sharpe' # Objective function, could be MinRisk, MaxRet, Utility or Sharpe
-hist = True # Use historical scenarios for risk measures that depend on scenarios
-rf = 0 # Risk free rate
-l = 0 # Risk aversion factor, only useful when obj is 'Utility'
-
-w = port.optimization(model=model, rm=rm, obj=obj, rf=rf, l=l, hist=hist)
-st.header('Tỉ trọng giải ngân theo mô hình lý thuyết MPT cổ điển')
-st.dataframe(w.T)
-ws = port.efficient_frontier(model='Classic', rm=rm, points=20, rf=0, hist=True)
-label = 'Max Risk Adjusted Return Portfolio'
-mu = port.mu
-cov = port.cov
-returns = port.returns
-fig, ax = plt.subplots(figsize=(10,6))
-ax = rp.plot_frontier(w_frontier=ws, mu=mu, cov=cov, returns=returns,
-                       rm=rm, rf=0, alpha=0.05, cmap='viridis', w=w,
-                       label=label, marker='*', s=16, c='r',
-                       height=6, width=10, t_factor=252, ax=None)
-st.pyplot(fig=fig)
-
+else:
+    st.write("Please upload a CSV file to continue.")
